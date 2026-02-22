@@ -7,3 +7,4 @@ anthropic==0.39.0
 python-dotenv==1.0.1
 apscheduler==3.10.4
 beautifulsoup4==4.12.3
+sendgrid==6.11.0

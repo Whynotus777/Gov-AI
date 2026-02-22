@@ -1,20 +1,43 @@
 """GovContract AI - FastAPI Application."""
 import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router
+from app.api.routes import router, _clusters, _profiles
 from app.core.config import get_settings
+from app.agents.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+
+def _get_all_clusters():
+    return list(_clusters.values())
+
+
+def _get_first_profile():
+    profiles = list(_profiles.values())
+    return profiles[0] if profiles else None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    start_scheduler(_get_all_clusters, _get_first_profile)
+    yield
+    # Shutdown
+    stop_scheduler()
+
+
 app = FastAPI(
     title="GovContract AI",
     description="AI-powered government contract discovery and analysis",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS for frontend
