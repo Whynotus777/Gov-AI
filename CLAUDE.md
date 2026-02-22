@@ -27,12 +27,12 @@ Ranked Dashboard with AI Analysis → Email Alerts
 
 ### Key Files
 - `backend/app/main.py` — FastAPI app entry point
-- `backend/app/services/sam_api.py` — SAM.gov API integration
+- `backend/app/services/sam_api.py` — SAM.gov API integration (parses complexity tier + competition level)
 - `backend/app/services/subnet_client.py` — SBA SubNet scraper
-- `backend/app/services/matcher.py` — Opportunity-to-company matching engine
+- `backend/app/services/matcher.py` — Matching engine: profile-based and cluster-based scoring
 - `backend/app/services/analyzer.py` — Claude-powered opportunity analysis
-- `backend/app/models/schemas.py` — Pydantic models for all data structures
-- `backend/app/api/routes.py` — API endpoints
+- `backend/app/models/schemas.py` — Pydantic models: Opportunity, CompanyProfile, CapabilityCluster, ComplexityTier, etc.
+- `backend/app/api/routes.py` — API endpoints (profiles, clusters, search, stats)
 - `frontend/src/App.jsx` — Main React dashboard (single-file artifact for V1)
 
 ### SAM.gov API Details
@@ -64,19 +64,48 @@ A user creates a profile with:
 - Set-aside eligibility (8(a), HUBZone, SDVOSB, WOSB, SDB, etc.)
 - Capability statement (free text → Claude embeds for semantic matching)
 - Past performance keywords
-- Geographic preferences
-- Agency preferences
+- Geographic preferences (shared across all clusters as profile-level prefs)
+- Agency preferences (shared across all clusters as profile-level prefs)
 - Revenue range / size standard
+
+### Capability Cluster Schema (feat/clusters-and-tiers)
+Users can create multiple `CapabilityCluster` objects representing distinct areas of expertise:
+- `name` — e.g., "Robotics Division", "Software Services"
+- `naics_codes` — NAICS codes specific to this cluster
+- `capability_description` — free text for AI semantic matching
+- `team_roster` — list of `TeamMember` (name, role, clearance)
+- `certifications` — checkboxes: SB, SDB, 8(a), HUBZone, SDVOSB, VOSB, WOSB, EDWOSB, Minority-Owned, AbilityOne
+
+The matcher scores each opportunity against ALL clusters and tags results with
+`best_cluster_id` and `best_cluster_name`. Users can filter search results by cluster.
+
+### Contract Complexity Tiers (feat/clusters-and-tiers)
+Every `Opportunity` has a `complexity_tier` field derived at parse time:
+- **MICRO**: estimated value < $10K
+- **SIMPLIFIED**: $10K–$250K
+- **STANDARD**: $250K–$10M (default when value unknown)
+- **MAJOR**: $10M+
+
+Value is parsed from SAM.gov award data (`award.amount`, `baseAndAllOptionsValue`).
+SubNet opportunities default to `SIMPLIFIED` (subcontracts are typically that range).
+`complexity_tiers` is an optional filter in `SearchFilters` — empty list shows all tiers.
+
+### Estimated Competition Level (feat/clusters-and-tiers)
+Every `Opportunity` has an `estimated_competition` field derived from the set-aside:
+- **OPEN**: no set-aside (full and open competition)
+- **PARTIAL**: partial set-aside
+- **RESTRICTED**: specific set-aside type (8a, HUBZone, SDVOSB, etc.) — fewer eligible bidders
 
 ### Matching Algorithm
 1. **Hard filters**: NAICS code overlap, set-aside eligibility, active status
-2. **Soft scoring** (0-100):
-   - NAICS match: exact=30pts, related=15pts
-   - Set-aside match: 20pts
-   - Agency preference match: 10pts
-   - Geographic match: 10pts
-   - Claude semantic relevance (capability statement vs description): 0-30pts
-3. Opportunities scoring >50 are shown, >70 are "high match"
+2. **Soft scoring** (0-100) — same for profile-based and cluster-based:
+   - NAICS match: exact=30pts, related (4-digit prefix)=20pts, same sector (2-digit)=10pts
+   - Set-aside / certification match: 20pts (15pts partial for generic SB set-aside)
+   - Agency preference match: 10pts (profile-level, shared across clusters)
+   - Geographic match: 10pts (profile-level, shared across clusters)
+   - Claude semantic relevance (capability description vs opportunity description): 0-30pts
+3. Opportunities scoring ≥70 are "high match", ≥50 are "medium"
+4. Cluster-based: every opportunity scored against all clusters; best cluster wins
 
 ### Codex Review Guidelines
 When OpenAI Codex reviews PRs from Claude Code:
@@ -114,6 +143,8 @@ cd backend && pytest
 - [x] Claude-powered opportunity analysis (Haiku for scoring, Sonnet for deep analysis)
 - [x] Dashboard UI with filters, score breakdowns, and AI analysis
 - [x] Demo mode with sample data
+- [x] **Contract complexity tiers** — `complexity_tier` field on every Opportunity (MICRO/SIMPLIFIED/STANDARD/MAJOR). Parsed from SAM.gov value data with heuristic fallback. Filter via `SearchFilters.complexity_tiers` list. SubNet defaults to SIMPLIFIED.
+- [x] **Capability clusters** — `CapabilityCluster` model with NAICS codes, certifications (SB/SDB/8a/HUBZone/SDVOSB/VOSB/WOSB/EDWOSB/Minority-Owned/AbilityOne), capability description, and team roster. CRUD endpoints at `/api/v1/clusters`. Matcher scores against ALL clusters, tags results with `best_cluster_id` / `best_cluster_name`. `estimated_competition` (OPEN/RESTRICTED/PARTIAL) on every Opportunity. Filter results by `cluster_ids` query param.
 
 ### V1 Remaining Tasks (Priority Order)
 - [ ] **Email alerts (daily digest)** — Use SendGrid free tier (100 emails/day). Create `backend/app/services/email_alerts.py`. APScheduler job runs at 6am ET, fetches new opportunities posted in last 24hrs, scores against all profiles, sends HTML email with top 10 matches. Template: subject line "🎯 {count} New Contract Matches — {date}", body shows title, department, score, deadline, one-click link to dashboard.

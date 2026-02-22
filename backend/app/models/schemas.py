@@ -26,6 +26,64 @@ class OpportunityType(str, Enum):
     INTENT_TO_BUNDLE = "Intent to Bundle"
 
 
+class ComplexityTier(str, Enum):
+    """Contract complexity tier based on estimated dollar value."""
+    MICRO = "MICRO"           # under $10K
+    SIMPLIFIED = "SIMPLIFIED" # $10K–$250K
+    STANDARD = "STANDARD"     # $250K–$10M
+    MAJOR = "MAJOR"           # $10M+
+
+
+class CertificationType(str, Enum):
+    """Small business certification types recognized by federal procurement."""
+    SB = "Small Business"
+    SDB = "Small Disadvantaged Business"
+    A8 = "8(a)"
+    HUBZONE = "HUBZone"
+    SDVOSB = "Service-Disabled Veteran-Owned"
+    VOSB = "Veteran-Owned"
+    WOSB = "Women-Owned Small Business"
+    EDWOSB = "Economically Disadvantaged WOSB"
+    MINORITY_OWNED = "Minority-Owned"
+    ABILITY_ONE = "AbilityOne"
+
+
+class CompetitionLevel(str, Enum):
+    """Estimated competitive landscape for an opportunity."""
+    RESTRICTED = "RESTRICTED"  # Set-aside limits eligible bidder pool
+    OPEN = "OPEN"              # Full and open — all businesses may bid
+    PARTIAL = "PARTIAL"        # Partial set-aside — mixed competitive field
+
+
+class TeamMember(BaseModel):
+    """A person on a capability cluster's team roster."""
+    name: str
+    role: str
+    clearance: Optional[str] = None  # e.g., "Secret", "Top Secret/SCI", "Public Trust"
+
+
+class CapabilityCluster(BaseModel):
+    """
+    A named grouping of NAICS codes, certifications, and personnel representing
+    a distinct area of expertise within a company. Users can have multiple clusters
+    (e.g., "Robotics Division" and "Software Services"). The matcher scores
+    each opportunity against all clusters and tags results with the best match.
+    """
+    id: str = ""
+    name: str
+    naics_codes: list[str] = Field(default_factory=list)
+    capability_description: str = Field(
+        default="",
+        description="Free-text description used for AI semantic matching",
+    )
+    team_roster: list[TeamMember] = Field(default_factory=list)
+    certifications: list[CertificationType] = Field(
+        default_factory=list,
+        description="Small business certifications held by this cluster",
+    )
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class CompanyProfile(BaseModel):
     """User's company profile for matching."""
     id: str = ""
@@ -59,10 +117,13 @@ class Opportunity(BaseModel):
     description: Optional[str] = None
     place_of_performance: Optional[str] = None
     point_of_contact: Optional[dict] = None
+    estimated_value: Optional[float] = None
     award_amount: Optional[float] = None
     link: Optional[str] = None
     active: bool = True
     source: str = "sam.gov"  # "sam.gov" | "subnet"
+    complexity_tier: ComplexityTier = ComplexityTier.STANDARD
+    estimated_competition: CompetitionLevel = CompetitionLevel.OPEN
 
 
 class MatchScore(BaseModel):
@@ -81,7 +142,9 @@ class ScoredOpportunity(BaseModel):
     opportunity: Opportunity
     match_score: MatchScore
     ai_analysis: Optional[str] = None
-    match_tier: str = "low"  # "high", "medium", "low"
+    match_tier: str = "low"  # "high", "medium", "low", "unscored"
+    best_cluster_id: Optional[str] = None
+    best_cluster_name: Optional[str] = None
 
 
 class SearchFilters(BaseModel):
@@ -97,6 +160,10 @@ class SearchFilters(BaseModel):
     min_score: float = 0
     limit: int = 50
     offset: int = 0
+    complexity_tiers: list[ComplexityTier] = Field(
+        default_factory=list,
+        description="Filter by complexity tier (MICRO/SIMPLIFIED/STANDARD/MAJOR). Empty = show all.",
+    )
 
 
 class OpportunityDetail(BaseModel):
