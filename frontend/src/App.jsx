@@ -932,6 +932,7 @@ export default function App() {
   const [scoutRunning, setScoutRunning] = useState(false);
   const [scoutNotice, setScoutNotice] = useState(null);
   const [error, setError] = useState(null);
+  const [samWarning, setSamWarning] = useState(null);
   const [filters, setFilters] = useState({
     clusterIds: [],
     tiers: [],
@@ -967,8 +968,11 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ limit: 100, min_score: 0 }),
         });
-        const opps = await opRes.json();
-        setOpportunities(opps);
+        if (!opRes.ok) {
+          setSamWarning("SAM.gov temporarily unavailable — showing SubNet results only.");
+        }
+        const opps = await opRes.json().catch(() => []);
+        setOpportunities(Array.isArray(opps) ? opps : []);
 
         // Load scout status
         try {
@@ -1015,6 +1019,7 @@ export default function App() {
   const handleSearch = useCallback(async () => {
     if (!isLive) return;
     setLoading(true);
+    setSamWarning(null);
     try {
       const qs = clusters.map(c => `cluster_ids=${c.id}`).join("&");
       const body = { limit: 100, min_score: 0, keywords: filters.keyword || undefined };
@@ -1023,8 +1028,11 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const opps = await opRes.json();
-      setOpportunities(opps);
+      if (!opRes.ok) {
+        setSamWarning("SAM.gov temporarily unavailable — showing SubNet results only.");
+      }
+      const opps = await opRes.json().catch(() => []);
+      setOpportunities(Array.isArray(opps) ? opps : []);
     } catch (e) {
       setError("Search failed — check backend connection.");
     }
@@ -1056,7 +1064,11 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ limit: 100, min_score: 0 }),
         });
-        setOpportunities(await opRes.json());
+        if (!opRes.ok) {
+          setSamWarning("SAM.gov temporarily unavailable — showing SubNet results only.");
+        }
+        const opps = await opRes.json().catch(() => []);
+        setOpportunities(Array.isArray(opps) ? opps : []);
       }
     } catch {
       setScoutNotice("Scout run failed — check backend.");
@@ -1093,6 +1105,15 @@ export default function App() {
       </header>
 
       {/* ── Toast notifications ── */}
+      {samWarning && (
+        <div className="shrink-0 px-6 py-2.5 text-sm flex items-center justify-between border-b bg-amber-500/10 border-amber-500/25 text-amber-300">
+          <div className="flex items-center gap-2">
+            <span className="text-amber-400">⚠</span>
+            <span>{samWarning}</span>
+          </div>
+          <button onClick={() => setSamWarning(null)} className="text-xs opacity-60 hover:opacity-100 ml-6">✕</button>
+        </div>
+      )}
       {(scoutNotice || error) && (
         <div className={`shrink-0 px-6 py-3 text-sm flex items-center justify-between border-b ${
           error

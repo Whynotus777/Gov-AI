@@ -81,11 +81,16 @@ class SAMGovClient:
                     for code in naics_codes:
                         p = {**params, "ncode": code}
                         tasks.append(self._fetch_page(client, p))
-                    raw_lists = await asyncio.gather(*tasks)
+                    # return_exceptions=True: a 429 on one NAICS code doesn't
+                    # cancel the others or propagate out of this gather.
+                    raw_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
             seen: set[str] = set()
             opportunities: list[Opportunity] = []
             for raw_items in raw_lists:
+                if isinstance(raw_items, Exception):
+                    logger.warning(f"SAM.gov NAICS request failed (skipping): {raw_items}")
+                    continue
                 for item in raw_items:
                     opp = self._parse_opportunity(item)
                     if opp and opp.notice_id not in seen:
@@ -96,11 +101,11 @@ class SAMGovClient:
             return opportunities
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"SAM.gov API error: {e.response.status_code} - {e.response.text}")
-            raise
-        except httpx.RequestError as e:
+            logger.error(f"SAM.gov API error: {e.response.status_code} - {e.response.text[:200]}")
+            return []
+        except Exception as e:
             logger.error(f"SAM.gov request failed: {e}")
-            raise
+            return []
 
     async def _fetch_page(self, client: httpx.AsyncClient, params: dict) -> list:
         """Execute one search request and return the raw opportunitiesData list."""

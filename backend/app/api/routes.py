@@ -186,18 +186,24 @@ async def search_opportunities(
         logger.info(f"Cache hit: {len(opportunities)} opportunities (age {age}s)")
     else:
         # --- Fetch SAM.gov and SubNet in parallel ---
-        sam_task = sam_client.search_opportunities(filters)
-        subnet_task = (
-            subnet_client.search_opportunities(filters)
-            if include_subnet
-            else asyncio.sleep(0, result=[])
-        )
+        # Both sources degrade independently: failures log a warning and return [].
+        # sam_client.search_opportunities() now returns [] on any error instead of
+        # raising, so sam_results / subnet_results should never be exceptions here.
+        # The isinstance guards below are a last-resort safety net.
+        try:
+            sam_task = sam_client.search_opportunities(filters)
+            subnet_task = (
+                subnet_client.search_opportunities(filters)
+                if include_subnet
+                else asyncio.sleep(0, result=[])
+            )
+            sam_results, subnet_results = await asyncio.gather(
+                sam_task, subnet_task, return_exceptions=True
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error during opportunity fetch: {e}")
+            sam_results, subnet_results = [], []
 
-        sam_results, subnet_results = await asyncio.gather(
-            sam_task, subnet_task, return_exceptions=True
-        )
-
-        # Degrade gracefully: a SAM.gov failure never blocks SubNet results
         if isinstance(sam_results, Exception):
             logger.warning(f"SAM.gov fetch failed (continuing with SubNet only): {sam_results}")
             sam_results = []
