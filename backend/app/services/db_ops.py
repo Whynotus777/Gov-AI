@@ -206,6 +206,64 @@ async def get_all_clusters_from_db(
 
 
 # ---------------------------------------------------------------------------
+# Semantic score cache
+# ---------------------------------------------------------------------------
+
+async def get_cached_semantic_score(
+    session: Optional[AsyncSession],
+    opportunity_id: str,
+    cluster_id: str,
+) -> Optional[float]:
+    """Return cached score (0-30) or None if not cached."""
+    if session is None:
+        return None
+    try:
+        from app.models.db_models import SemanticScoreRow
+        result = await session.execute(
+            select(SemanticScoreRow).where(
+                SemanticScoreRow.opportunity_id == opportunity_id,
+                SemanticScoreRow.cluster_id == cluster_id,
+            )
+        )
+        row = result.scalar_one_or_none()
+        return row.score if row else None
+    except Exception as e:
+        logger.warning(f"DB get_cached_semantic_score failed: {e}")
+        return None
+
+
+async def cache_semantic_score(
+    session: Optional[AsyncSession],
+    opportunity_id: str,
+    cluster_id: str,
+    score: float,
+) -> None:
+    """Upsert a semantic score into the cache table."""
+    if session is None:
+        return
+    try:
+        from sqlalchemy.dialects.postgresql import insert
+        from app.models.db_models import SemanticScoreRow
+        stmt = insert(SemanticScoreRow).values(
+            opportunity_id=opportunity_id,
+            cluster_id=cluster_id,
+            score=score,
+            scored_at=datetime.utcnow(),
+        ).on_conflict_do_update(
+            index_elements=["opportunity_id", "cluster_id"],
+            set_={"score": score, "scored_at": datetime.utcnow()},
+        )
+        await session.execute(stmt)
+        await session.commit()
+    except Exception as e:
+        logger.warning(f"DB cache_semantic_score failed: {e}")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Scout runs
 # ---------------------------------------------------------------------------
 

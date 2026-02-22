@@ -66,6 +66,15 @@ class ScoutRunRow(Base):
     duration_seconds = Column(Float, default=0.0)
 
 
+class SemanticScoreRow(Base):
+    __tablename__ = "semantic_scores"
+
+    opportunity_id = Column(String, primary_key=True)
+    cluster_id = Column(String, primary_key=True)  # cluster UUID or "profile"
+    score = Column(Float, nullable=False)           # 0-30 normalised
+    scored_at = Column(DateTime, default=datetime.utcnow)
+
+
 class PursuitRow(Base):
     __tablename__ = "pursuits"
 

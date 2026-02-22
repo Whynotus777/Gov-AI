@@ -299,21 +299,12 @@ async def search_opportunities(
             for opp in opportunities
         ]
 
-    # --- Optional AI semantic enrichment ---
+    # --- Optional AI semantic enrichment (enrich=true) ---
+    # SemanticScorer: scores top-10 by NAICS score, caches in semantic_scores table.
     if enrich and (profile or cluster_ids):
-        for i, s in enumerate(scored[:20]):
-            if s.best_cluster_id and s.best_cluster_id in _clusters:
-                # Build a minimal profile-like object from the matched cluster
-                cluster = _clusters[s.best_cluster_id]
-                cluster_as_profile = CompanyProfile(
-                    company_name=cluster.name,
-                    naics_codes=cluster.naics_codes,
-                    capability_statement=cluster.capability_description,
-                )
-                scored[i] = await analyzer.enrich_with_semantic_score(s, cluster_as_profile)
-            elif profile:
-                scored[i] = await analyzer.enrich_with_semantic_score(s, profile)
-        scored.sort(key=lambda x: x.match_score.overall_score, reverse=True)
+        from app.services.semantic_scorer import SemanticScorer
+        scorer = SemanticScorer()
+        scored = await scorer.enrich(scored, _clusters, profile)
 
     # --- Post-scoring filters ---
 
