@@ -1,7 +1,10 @@
 """API routes for GovContract AI."""
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
+from time import monotonic
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 
@@ -27,6 +30,28 @@ sam_client = SAMGovClient()
 subnet_client = SubNetClient()
 matcher = MatchingEngine()
 analyzer = OpportunityAnalyzer()
+
+# --- Search result cache (raw opportunities, before scoring) ---
+# Keyed by a hash of search params. Evicted after SEARCH_CACHE_TTL seconds.
+SEARCH_CACHE_TTL = 300  # 5 minutes
+_search_cache: dict[str, tuple[float, list]] = {}  # key → (fetched_at, opportunities)
+
+
+def _search_cache_key(filters: SearchFilters, include_subnet: bool) -> str:
+    """Stable MD5 key from the fetch-relevant subset of SearchFilters."""
+    data = {
+        "keywords": filters.keywords,
+        "naics_codes": sorted(filters.naics_codes),
+        "set_aside": filters.set_aside,
+        "posted_from": filters.posted_from,
+        "posted_to": filters.posted_to,
+        "opportunity_types": sorted(filters.opportunity_types),
+        "department": filters.department,
+        "limit": filters.limit,
+        "offset": filters.offset,
+        "include_subnet": include_subnet,
+    }
+    return hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 # --- Company Profile ---
@@ -151,32 +176,47 @@ async def search_opportunities(
     Set `enrich=true` to add Claude semantic scoring (~$0.001/opportunity, top-20 only).
     Set `include_subnet=false` to skip SubNet and return SAM.gov results only.
     """
-    # Fetch SAM.gov and SubNet in parallel
-    sam_task = sam_client.search_opportunities(filters)
-    subnet_task = (
-        subnet_client.search_opportunities(filters)
-        if include_subnet
-        else asyncio.sleep(0, result=[])
-    )
+    # --- Cache lookup (keyed on fetch params, not scoring params) ---
+    cache_key = _search_cache_key(filters, include_subnet)
+    now = monotonic()
+    cached_entry = _search_cache.get(cache_key)
+    if cached_entry and (now - cached_entry[0]) < SEARCH_CACHE_TTL:
+        age = int(now - cached_entry[0])
+        opportunities = cached_entry[1]
+        logger.info(f"Cache hit: {len(opportunities)} opportunities (age {age}s)")
+    else:
+        # --- Fetch SAM.gov and SubNet in parallel ---
+        sam_task = sam_client.search_opportunities(filters)
+        subnet_task = (
+            subnet_client.search_opportunities(filters)
+            if include_subnet
+            else asyncio.sleep(0, result=[])
+        )
 
-    try:
         sam_results, subnet_results = await asyncio.gather(
             sam_task, subnet_task, return_exceptions=True
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Data source error: {str(e)}")
 
-    # Handle partial failures gracefully — never let SubNet take down SAM.gov results
-    if isinstance(sam_results, Exception):
-        raise HTTPException(status_code=502, detail=f"SAM.gov API error: {sam_results}")
-    if isinstance(subnet_results, Exception):
-        logger.warning(f"SubNet fetch failed (continuing with SAM.gov only): {subnet_results}")
-        subnet_results = []
+        # Degrade gracefully: a SAM.gov failure never blocks SubNet results
+        if isinstance(sam_results, Exception):
+            logger.warning(f"SAM.gov fetch failed (continuing with SubNet only): {sam_results}")
+            sam_results = []
+        if isinstance(subnet_results, Exception):
+            logger.warning(f"SubNet fetch failed (continuing with SAM.gov only): {subnet_results}")
+            subnet_results = []
 
-    opportunities = list(sam_results) + list(subnet_results)
-    logger.info(
-        f"Fetched {len(sam_results)} SAM.gov + {len(subnet_results)} SubNet opportunities"
-    )
+        opportunities = list(sam_results) + list(subnet_results)
+        logger.info(
+            f"Fetched {len(sam_results)} SAM.gov + {len(subnet_results)} SubNet opportunities"
+        )
+
+        # Populate cache (only when at least one source returned results)
+        if opportunities:
+            _search_cache[cache_key] = (now, opportunities)
+            # Evict entries older than TTL to bound memory use
+            expired = [k for k, (t, _) in _search_cache.items() if now - t > SEARCH_CACHE_TTL]
+            for k in expired:
+                del _search_cache[k]
 
     if not opportunities:
         return []
