@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # Supabase (V2)
     supabase_url: str = ""
     supabase_anon_key: str = ""
+
+    # PostgreSQL — asyncpg connection string (leave blank for in-memory V1 mode)
+    # Format: postgresql+asyncpg://user:password@host:port/dbname
+    # Supabase: postgresql+asyncpg://postgres.{ref}:{pw}@{region}.pooler.supabase.com:5432/postgres
+    database_url: str = ""
     
     # Matching thresholds
     high_match_threshold: float = 70.0

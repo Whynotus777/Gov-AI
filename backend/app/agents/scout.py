@@ -182,9 +182,31 @@ class ScoutAgent:
         self._record_run(state, run_at, total_fetched, len(new_opportunities))
         _save_state(state)
 
-        return self._build_result(
+        result = self._build_result(
             new_opportunities, total_fetched, total_scored, run_at, posted_from
         )
+
+        # Log run to DB (non-blocking)
+        try:
+            from app.core.database import get_db_session
+            from app.services.db_ops import log_scout_run
+            elapsed = (datetime.utcnow() - run_at).total_seconds()
+            db_session = await get_db_session()
+            if db_session:
+                try:
+                    await log_scout_run(db_session, {
+                        "run_at": run_at.isoformat(),
+                        "total_fetched": total_fetched,
+                        "new_above_threshold": len(new_opportunities),
+                        "alerts_sent": 0,
+                        "duration_seconds": elapsed,
+                    })
+                finally:
+                    await db_session.close()
+        except Exception as e:
+            logger.warning(f"Scout: failed to log run to DB: {e}")
+
+        return result
 
     # ------------------------------------------------------------------
     # Helpers

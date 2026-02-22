@@ -16,6 +16,10 @@ from app.services.sam_api import SAMGovClient
 from app.services.subnet_client import SubNetClient
 from app.services.matcher import MatchingEngine
 from app.services.analyzer import OpportunityAnalyzer
+from app.core.database import get_db_session
+from app.services.db_ops import (
+    upsert_cluster, delete_cluster_from_db, upsert_opportunities,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,6 +86,26 @@ async def list_profiles():
 
 # --- Capability Clusters ---
 
+async def _db_upsert_cluster(cluster: CapabilityCluster) -> None:
+    """Fire-and-forget cluster upsert to DB. Errors are logged, not raised."""
+    session = await get_db_session()
+    if session:
+        try:
+            await upsert_cluster(session, cluster)
+        finally:
+            await session.close()
+
+
+async def _db_delete_cluster(cluster_id: str) -> None:
+    """Fire-and-forget cluster delete from DB."""
+    session = await get_db_session()
+    if session:
+        try:
+            await delete_cluster_from_db(session, cluster_id)
+        finally:
+            await session.close()
+
+
 @router.post("/clusters", response_model=CapabilityCluster)
 async def create_cluster(cluster: CapabilityCluster):
     """
@@ -96,6 +120,7 @@ async def create_cluster(cluster: CapabilityCluster):
     if not cluster.id:
         cluster.id = str(uuid.uuid4())
     _clusters[cluster.id] = cluster
+    await _db_upsert_cluster(cluster)
     logger.info(f"Cluster created: {cluster.name} ({cluster.id})")
     return cluster
 
@@ -121,6 +146,7 @@ async def update_cluster(cluster_id: str, cluster: CapabilityCluster):
         raise HTTPException(status_code=404, detail="Cluster not found")
     cluster.id = cluster_id
     _clusters[cluster_id] = cluster
+    await _db_upsert_cluster(cluster)
     return cluster
 
 
@@ -130,6 +156,7 @@ async def delete_cluster(cluster_id: str):
     if cluster_id not in _clusters:
         raise HTTPException(status_code=404, detail="Cluster not found")
     del _clusters[cluster_id]
+    await _db_delete_cluster(cluster_id)
     return {"deleted": cluster_id}
 
 
@@ -223,6 +250,16 @@ async def search_opportunities(
             expired = [k for k, (t, _) in _search_cache.items() if now - t > SEARCH_CACHE_TTL]
             for k in expired:
                 del _search_cache[k]
+            # Persist to DB (non-blocking — errors never surface to caller)
+            try:
+                db_session = await get_db_session()
+                if db_session:
+                    try:
+                        await upsert_opportunities(db_session, opportunities)
+                    finally:
+                        await db_session.close()
+            except Exception as e:
+                logger.warning(f"DB opportunity upsert failed (non-critical): {e}")
 
     if not opportunities:
         return []
