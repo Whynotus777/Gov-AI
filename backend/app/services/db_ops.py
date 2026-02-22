@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schemas import (
-    CapabilityCluster, CertificationType, Opportunity, TeamMember,
+    CapabilityCluster, CertificationType, Opportunity, Pursuit, PursuitStatus, TeamMember,
 )
 
 logger = logging.getLogger(__name__)
@@ -424,6 +424,101 @@ async def cache_semantic_score(
             await session.rollback()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Pursuits
+# ---------------------------------------------------------------------------
+
+async def upsert_pursuit(
+    session: Optional[AsyncSession],
+    pursuit: Pursuit,
+) -> None:
+    """Insert or update a pursuit row."""
+    if session is None:
+        return
+    try:
+        from sqlalchemy.dialects.postgresql import insert
+        from app.models.db_models import PursuitRow
+        now = datetime.utcnow()
+        stmt = insert(PursuitRow).values(
+            id=pursuit.id,
+            opportunity_id=pursuit.opportunity_id,
+            cluster_id=pursuit.cluster_id,
+            status=pursuit.status.value,
+            notes=pursuit.notes,
+            assigned_team=pursuit.assigned_team,
+            created_at=pursuit.created_at,
+            updated_at=now,
+        ).on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "status": pursuit.status.value,
+                "notes": pursuit.notes,
+                "assigned_team": pursuit.assigned_team,
+                "updated_at": now,
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()
+        logger.debug(f"DB: upserted pursuit {pursuit.id}")
+    except Exception as e:
+        logger.error(f"DB upsert_pursuit failed: {e}")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+
+async def delete_pursuit_from_db(
+    session: Optional[AsyncSession],
+    pursuit_id: str,
+) -> None:
+    if session is None:
+        return
+    try:
+        from app.models.db_models import PursuitRow
+        await session.execute(delete(PursuitRow).where(PursuitRow.id == pursuit_id))
+        await session.commit()
+        logger.debug(f"DB: deleted pursuit {pursuit_id}")
+    except Exception as e:
+        logger.error(f"DB delete_pursuit failed: {e}")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+
+async def get_all_pursuits_from_db(
+    session: Optional[AsyncSession],
+) -> list[Pursuit]:
+    if session is None:
+        return []
+    try:
+        from app.models.db_models import PursuitRow
+        result = await session.execute(
+            select(PursuitRow).order_by(PursuitRow.updated_at.desc())
+        )
+        rows = result.scalars().all()
+        pursuits = []
+        for row in rows:
+            try:
+                pursuits.append(Pursuit(
+                    id=row.id,
+                    opportunity_id=row.opportunity_id,
+                    cluster_id=row.cluster_id,
+                    status=PursuitStatus(row.status),
+                    notes=row.notes or "",
+                    assigned_team=row.assigned_team or [],
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
+                ))
+            except Exception as e:
+                logger.warning(f"DB: failed to deserialise pursuit {row.id}: {e}")
+        return pursuits
+    except Exception as e:
+        logger.error(f"DB get_all_pursuits failed: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------

@@ -4,13 +4,15 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import datetime
 from time import monotonic
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from typing import Optional
 
 from app.models.schemas import (
     CompanyProfile, CapabilityCluster, SearchFilters,
-    ScoredOpportunity, OpportunityDetail,
+    ScoredOpportunity, OpportunityDetail, Pursuit, PursuitStatus,
 )
 from app.services.sam_api import SAMGovClient
 from app.services.subnet_client import SubNetClient
@@ -19,6 +21,7 @@ from app.services.analyzer import OpportunityAnalyzer
 from app.core.database import get_db_session
 from app.services.db_ops import (
     upsert_cluster, delete_cluster_from_db, upsert_opportunities,
+    upsert_pursuit, delete_pursuit_from_db, get_all_pursuits_from_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,7 @@ router = APIRouter()
 _profiles: dict[str, CompanyProfile] = {}
 _clusters: dict[str, CapabilityCluster] = {}
 _cached_opportunities: list[ScoredOpportunity] = []
+_pursuits: dict[str, Pursuit] = {}
 
 sam_client = SAMGovClient()
 subnet_client = SubNetClient()
@@ -60,7 +64,7 @@ def _search_cache_key(filters: SearchFilters, include_subnet: bool) -> str:
 
 # --- Company Profile ---
 
-@router.post("/profile", response_model=CompanyProfile)
+@router.post("/profile", tags=["Profiles"], response_model=CompanyProfile)
 async def create_or_update_profile(profile: CompanyProfile):
     """Create or update the user's company profile."""
     if not profile.id:
@@ -70,7 +74,7 @@ async def create_or_update_profile(profile: CompanyProfile):
     return profile
 
 
-@router.get("/profile/{profile_id}", response_model=CompanyProfile)
+@router.get("/profile/{profile_id}", tags=["Profiles"], response_model=CompanyProfile)
 async def get_profile(profile_id: str):
     """Get a company profile by ID."""
     if profile_id not in _profiles:
@@ -78,7 +82,7 @@ async def get_profile(profile_id: str):
     return _profiles[profile_id]
 
 
-@router.get("/profiles", response_model=list[CompanyProfile])
+@router.get("/profiles", tags=["Profiles"], response_model=list[CompanyProfile])
 async def list_profiles():
     """List all profiles (V1: small scale, no auth)."""
     return list(_profiles.values())
@@ -106,7 +110,7 @@ async def _db_delete_cluster(cluster_id: str) -> None:
             await session.close()
 
 
-@router.post("/clusters", response_model=CapabilityCluster)
+@router.post("/clusters", tags=["Clusters"], response_model=CapabilityCluster)
 async def create_cluster(cluster: CapabilityCluster):
     """
     Create a capability cluster.
@@ -125,7 +129,7 @@ async def create_cluster(cluster: CapabilityCluster):
     return cluster
 
 
-@router.get("/clusters/{cluster_id}", response_model=CapabilityCluster)
+@router.get("/clusters/{cluster_id}", tags=["Clusters"], response_model=CapabilityCluster)
 async def get_cluster(cluster_id: str):
     """Get a capability cluster by ID."""
     if cluster_id not in _clusters:
@@ -133,13 +137,13 @@ async def get_cluster(cluster_id: str):
     return _clusters[cluster_id]
 
 
-@router.get("/clusters", response_model=list[CapabilityCluster])
+@router.get("/clusters", tags=["Clusters"], response_model=list[CapabilityCluster])
 async def list_clusters():
     """List all capability clusters."""
     return list(_clusters.values())
 
 
-@router.put("/clusters/{cluster_id}", response_model=CapabilityCluster)
+@router.put("/clusters/{cluster_id}", tags=["Clusters"], response_model=CapabilityCluster)
 async def update_cluster(cluster_id: str, cluster: CapabilityCluster):
     """Update a capability cluster."""
     if cluster_id not in _clusters:
@@ -150,7 +154,7 @@ async def update_cluster(cluster_id: str, cluster: CapabilityCluster):
     return cluster
 
 
-@router.delete("/clusters/{cluster_id}")
+@router.delete("/clusters/{cluster_id}", tags=["Clusters"])
 async def delete_cluster(cluster_id: str):
     """Delete a capability cluster."""
     if cluster_id not in _clusters:
@@ -162,7 +166,7 @@ async def delete_cluster(cluster_id: str):
 
 # --- Opportunity Search & Matching ---
 
-@router.post("/opportunities/search", response_model=list[ScoredOpportunity])
+@router.post("/opportunities/search", tags=["Search"], response_model=list[ScoredOpportunity])
 async def search_opportunities(
     filters: SearchFilters,
     profile_id: Optional[str] = None,
@@ -324,7 +328,7 @@ async def search_opportunities(
     return scored
 
 
-@router.get("/opportunities/{notice_id}/detail", response_model=OpportunityDetail)
+@router.get("/opportunities/{notice_id}/detail", tags=["Search"], response_model=OpportunityDetail)
 async def get_opportunity_detail(
     notice_id: str,
     profile_id: Optional[str] = None,
@@ -365,7 +369,7 @@ async def get_opportunity_detail(
 
 # --- Quick Stats ---
 
-@router.get("/stats")
+@router.get("/stats", tags=["Search"])
 async def get_stats():
     """Dashboard stats."""
     cluster_match_counts: dict[str, int] = {}
@@ -380,24 +384,152 @@ async def get_stats():
         tier = s.opportunity.complexity_tier.value
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
+    pursuit_status_counts: dict[str, int] = {}
+    for p in _pursuits.values():
+        pursuit_status_counts[p.status.value] = pursuit_status_counts.get(p.status.value, 0) + 1
+
+    all_sources = set(s.opportunity.source for s in _cached_opportunities)
+    by_source = {src: sum(1 for s in _cached_opportunities if s.opportunity.source == src) for src in all_sources}
+
     return {
         "total_profiles": len(_profiles),
         "total_clusters": len(_clusters),
         "cached_opportunities": len(_cached_opportunities),
         "high_matches": sum(1 for s in _cached_opportunities if s.match_tier == "high"),
         "medium_matches": sum(1 for s in _cached_opportunities if s.match_tier == "medium"),
-        "by_source": {
-            "sam.gov": sum(1 for s in _cached_opportunities if s.opportunity.source == "sam.gov"),
-            "subnet": sum(1 for s in _cached_opportunities if s.opportunity.source == "subnet"),
-        },
+        "by_source": by_source,
         "by_complexity_tier": tier_counts,
         "by_cluster": cluster_match_counts,
+        "pursuits": {
+            "total": len(_pursuits),
+            "by_status": pursuit_status_counts,
+        },
     }
+
+
+# --- Pursuit Tracker ---
+
+class PursuitCreate(BaseModel):
+    opportunity_id: str
+    opportunity_title: Optional[str] = None
+    cluster_id: Optional[str] = None
+    status: PursuitStatus = PursuitStatus.IDENTIFIED
+    notes: str = ""
+    assigned_team: list[str] = []
+
+class PursuitUpdate(BaseModel):
+    status: Optional[PursuitStatus] = None
+    notes: Optional[str] = None
+    assigned_team: Optional[list[str]] = None
+
+
+@router.post("/pursuits", tags=["Pursuits"], response_model=Pursuit)
+async def create_pursuit(body: PursuitCreate):
+    """
+    Create a new contract pursuit.
+
+    Pursuits track an opportunity through the capture lifecycle:
+    identified → qualifying → capture → proposal → submitted → won/lost.
+    """
+    pursuit_id = str(uuid.uuid4())
+    cluster_name = _clusters[body.cluster_id].name if body.cluster_id and body.cluster_id in _clusters else None
+    pursuit = Pursuit(
+        id=pursuit_id,
+        opportunity_id=body.opportunity_id,
+        opportunity_title=body.opportunity_title,
+        cluster_id=body.cluster_id,
+        cluster_name=cluster_name,
+        status=body.status,
+        notes=body.notes,
+        assigned_team=body.assigned_team,
+    )
+    _pursuits[pursuit_id] = pursuit
+
+    session = await get_db_session()
+    if session:
+        try:
+            await upsert_pursuit(session, pursuit)
+        finally:
+            await session.close()
+
+    return pursuit
+
+
+@router.get("/pursuits", tags=["Pursuits"], response_model=list[Pursuit])
+async def list_pursuits(status: Optional[str] = Query(default=None, description="Filter by status")):
+    """
+    List all pursuits, optionally filtered by status.
+
+    Returns pursuits sorted by updated_at descending (most recently touched first).
+    """
+    pursuits = list(_pursuits.values())
+    if status:
+        pursuits = [p for p in pursuits if p.status.value == status]
+    return sorted(pursuits, key=lambda p: p.updated_at, reverse=True)
+
+
+@router.get("/pursuits/{pursuit_id}", tags=["Pursuits"], response_model=Pursuit)
+async def get_pursuit(pursuit_id: str):
+    """Get a single pursuit by ID."""
+    pursuit = _pursuits.get(pursuit_id)
+    if not pursuit:
+        raise HTTPException(status_code=404, detail=f"Pursuit {pursuit_id} not found")
+    return pursuit
+
+
+@router.patch("/pursuits/{pursuit_id}", tags=["Pursuits"], response_model=Pursuit)
+async def update_pursuit(pursuit_id: str, body: PursuitUpdate):
+    """
+    Update pursuit status, notes, or assigned team.
+
+    Only provided fields are updated (PATCH semantics).
+    """
+    pursuit = _pursuits.get(pursuit_id)
+    if not pursuit:
+        raise HTTPException(status_code=404, detail=f"Pursuit {pursuit_id} not found")
+
+    updates: dict = {}
+    if body.status is not None:
+        updates["status"] = body.status
+    if body.notes is not None:
+        updates["notes"] = body.notes
+    if body.assigned_team is not None:
+        updates["assigned_team"] = body.assigned_team
+    updates["updated_at"] = datetime.utcnow()
+
+    updated = pursuit.model_copy(update=updates)
+    _pursuits[pursuit_id] = updated
+
+    session = await get_db_session()
+    if session:
+        try:
+            await upsert_pursuit(session, updated)
+        finally:
+            await session.close()
+
+    return updated
+
+
+@router.delete("/pursuits/{pursuit_id}", tags=["Pursuits"])
+async def delete_pursuit(pursuit_id: str):
+    """Delete a pursuit."""
+    if pursuit_id not in _pursuits:
+        raise HTTPException(status_code=404, detail=f"Pursuit {pursuit_id} not found")
+    del _pursuits[pursuit_id]
+
+    session = await get_db_session()
+    if session:
+        try:
+            await delete_pursuit_from_db(session, pursuit_id)
+        finally:
+            await session.close()
+
+    return {"deleted": pursuit_id}
 
 
 # --- Scout Agent ---
 
-@router.post("/scout/run")
+@router.post("/scout/run", tags=["Scout"])
 async def run_scout(profile_id: Optional[str] = None):
     """
     Manually trigger a Scout agent run.
@@ -455,7 +587,7 @@ async def run_scout(profile_id: Optional[str] = None):
     }
 
 
-@router.get("/scout/status")
+@router.get("/scout/status", tags=["Scout"])
 async def scout_status():
     """
     Get Scout agent status: last run time, next run time, and cumulative stats.
@@ -500,7 +632,7 @@ async def scout_status():
 
 # --- Backfill ---
 
-@router.post("/scout/backfill")
+@router.post("/scout/backfill", tags=["Scout"])
 async def start_backfill(
     months: int = Query(default=12, ge=1, le=36, description="Months of history to fetch"),
     resume: bool = Query(default=True, description="Resume from last pause point if available"),
@@ -538,7 +670,7 @@ async def start_backfill(
     }
 
 
-@router.get("/spending/{naics_code}")
+@router.get("/spending/{naics_code}", tags=["Intel"])
 async def get_spending_trends(naics_code: str):
     """
     Federal spending trends for a NAICS code across the last 3 fiscal years.
@@ -552,7 +684,7 @@ async def get_spending_trends(naics_code: str):
     return await client.get_spending(naics_code)
 
 
-@router.get("/intel/{naics_code}")
+@router.get("/intel/{naics_code}", tags=["Intel"])
 async def get_competitive_intel(
     naics_code: str,
     agency: Optional[str] = Query(
@@ -572,7 +704,168 @@ async def get_competitive_intel(
     return await client.get_intel(naics_code=naics_code, agency=agency, years=years)
 
 
-@router.get("/scout/backfill/status")
+@router.post("/opportunities/{notice_id}/proposal", tags=["Search"])
+async def generate_proposal(
+    notice_id: str,
+    cluster_id: str = Query(..., description="Capability cluster ID to tailor the proposal for"),
+):
+    """
+    Generate a proposal template for an opportunity using Claude Haiku.
+
+    Produces 6 sections: cover letter, technical approach, management approach,
+    past performance placeholder, staffing plan (from cluster team roster),
+    and pricing placeholder. Takes 5-15 seconds. Results are not cached —
+    call again to regenerate.
+    """
+    # Find opportunity in cache
+    opp = None
+    for scored in _cached_opportunities:
+        if scored.opportunity.notice_id == notice_id:
+            opp = scored.opportunity
+            break
+
+    if opp is None:
+        raise HTTPException(status_code=404, detail=f"Opportunity {notice_id} not found in current results. Run a search first.")
+
+    cluster = _clusters.get(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found.")
+
+    from app.services.proposal_generator import ProposalGenerator
+    gen = ProposalGenerator()
+    return await gen.generate(opp, cluster)
+
+
+# --- Export ---
+
+@router.get("/export/opportunities", tags=["Export"])
+async def export_opportunities(
+    format: str = Query(default="csv", description="Export format: csv or xlsx"),
+):
+    """
+    Export current search results to CSV or Excel.
+
+    Downloads the in-memory opportunity cache (most recent search results)
+    as a file. Run a search first to populate results.
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    rows = [
+        {
+            "notice_id": s.opportunity.notice_id,
+            "title": s.opportunity.title,
+            "department": s.opportunity.department,
+            "naics_code": s.opportunity.naics_code,
+            "set_aside": s.opportunity.set_aside,
+            "complexity_tier": s.opportunity.complexity_tier.value,
+            "estimated_competition": s.opportunity.estimated_competition.value,
+            "posted_date": s.opportunity.posted_date,
+            "response_deadline": s.opportunity.response_deadline,
+            "estimated_value": s.opportunity.estimated_value,
+            "source": s.opportunity.source,
+            "match_score": s.match_score.overall_score,
+            "match_tier": s.match_tier,
+            "best_cluster": s.best_cluster_name,
+            "link": s.opportunity.link,
+        }
+        for s in _cached_opportunities
+    ]
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No opportunities in cache. Run a search first.")
+
+    if format == "xlsx":
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Opportunities"
+        headers = list(rows[0].keys())
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(h) for h in headers])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=opportunities.xlsx"},
+        )
+    else:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=opportunities.csv"},
+        )
+
+
+@router.get("/export/pursuits", tags=["Export"])
+async def export_pursuits(
+    format: str = Query(default="csv", description="Export format: csv or xlsx"),
+):
+    """
+    Export all pursuits to CSV or Excel.
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    rows = [
+        {
+            "id": p.id,
+            "opportunity_id": p.opportunity_id,
+            "opportunity_title": p.opportunity_title,
+            "cluster_name": p.cluster_name,
+            "status": p.status.value,
+            "notes": p.notes,
+            "assigned_team": ", ".join(p.assigned_team),
+            "created_at": p.created_at.isoformat(),
+            "updated_at": p.updated_at.isoformat(),
+        }
+        for p in sorted(_pursuits.values(), key=lambda p: p.updated_at, reverse=True)
+    ]
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No pursuits to export.")
+
+    if format == "xlsx":
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Pursuits"
+        headers = list(rows[0].keys())
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(h) for h in headers])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=pursuits.xlsx"},
+        )
+    else:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=pursuits.csv"},
+        )
+
+
+@router.get("/scout/backfill/status", tags=["Scout"])
 async def backfill_status():
     """
     Get current backfill progress.

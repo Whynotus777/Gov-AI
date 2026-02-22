@@ -166,6 +166,32 @@ class SearchFilters(BaseModel):
     )
 
 
+class PursuitStatus(str, Enum):
+    """Kanban stages for a contract pursuit."""
+    IDENTIFIED = "identified"
+    QUALIFYING = "qualifying"
+    CAPTURE = "capture"
+    PROPOSAL = "proposal"
+    SUBMITTED = "submitted"
+    WON = "won"
+    LOST = "lost"
+    NO_BID = "no_bid"
+
+
+class Pursuit(BaseModel):
+    """A tracked contract pursuit linked to an opportunity and cluster."""
+    id: str = ""
+    opportunity_id: str
+    opportunity_title: Optional[str] = None
+    cluster_id: Optional[str] = None
+    cluster_name: Optional[str] = None
+    status: PursuitStatus = PursuitStatus.IDENTIFIED
+    notes: str = ""
+    assigned_team: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class OpportunityDetail(BaseModel):
     """Extended detail for a single opportunity including AI analysis."""
     opportunity: Opportunity
