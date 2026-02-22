@@ -505,3 +505,55 @@ async def scout_status():
         ),
         "scheduler_running": scheduler.running if scheduler else False,
     }
+
+
+# --- Backfill ---
+
+@router.post("/scout/backfill")
+async def start_backfill(
+    months: int = Query(default=12, ge=1, le=36, description="Months of history to fetch"),
+    resume: bool = Query(default=True, description="Resume from last pause point if available"),
+):
+    """
+    Backfill historical SAM.gov opportunities into the Supabase database.
+
+    Fetches up to `months` months of history, month-by-month, paginating
+    at 100 results/page. Upserts every opportunity to the opportunities table.
+    Runs in the background — returns immediately. Poll `/api/v1/scout/backfill/status`
+    for progress.
+
+    Set `resume=false` to restart from scratch (discards previous progress).
+
+    Requires DATABASE_URL to be configured — returns 400 if DB is not available.
+    """
+    from app.core.database import db_enabled
+    if not db_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="DATABASE_URL is not configured. Backfill requires a Supabase connection.",
+        )
+
+    from app.agents.backfill import run_backfill, _running, get_status
+    if _running:
+        return {"status": "already_running", "progress": get_status()}
+
+    # Fire and forget — runs in the background
+    asyncio.create_task(run_backfill(months=months, resume=resume))
+    return {
+        "status": "started",
+        "months_requested": months,
+        "resume": resume,
+        "message": f"Backfill started for {months} months. Poll /api/v1/scout/backfill/status for progress.",
+    }
+
+
+@router.get("/scout/backfill/status")
+async def backfill_status():
+    """
+    Get current backfill progress.
+
+    Returns status (idle/running/paused/completed/error), months done,
+    total opportunities upserted, and last error if any.
+    """
+    from app.agents.backfill import get_status
+    return get_status()
