@@ -305,6 +305,27 @@ SUPABASE_URL=            # From Supabase dashboard
 SUPABASE_ANON_KEY=       # From Supabase dashboard
 ```
 
+## Autonomous Contract Pursuit Pipeline (V2-V3 Vision)
+Six-agent system that automates the full government contract capture lifecycle.
+
+Agent 1 - Scout (V1, building now): Scan SAM.gov + SubNet every 6 hours for new opportunities, score against all clusters, alert via email
+Agent 2 - Qualifier (V2): Deep-qualify flagged opportunities, extract RFP requirements, go/no-go scoring
+Agent 3 - Drafter (V2-V3): Generate proposal drafts section by section using knowledge base
+Agent 4 - Reviewer (V3): Red-team proposals against evaluation criteria
+Agent 5 - Submitter (V3): Package and submit final proposals
+Agent 6 - Tracker (V3): Monitor amendments, Q&A, award announcements
+
+### Scout Agent — Key Files
+- `backend/app/agents/__init__.py` — empty init
+- `backend/app/agents/scout.py` — ScoutAgent class; persists state to `backend/data/scout_state.json`
+- `backend/app/agents/scheduler.py` — APScheduler BackgroundScheduler; starts in FastAPI lifespan
+- `backend/app/services/email_alerts.py` — SendGrid HTML digest; degrades gracefully if not configured
+- Scout endpoints: `POST /api/v1/scout/run` (manual trigger), `GET /api/v1/scout/status`
+
+### Scout State File
+`backend/data/scout_state.json` — persists `last_run_at`, `seen_notice_ids` (capped at 10K), and last 100 run records.
+On first run: fetches last 24h of opportunities. Subsequent runs: fetches since `last_run_at`.
+
 ## Design Principles
 1. **Franchise owner simple**: If a 7-Eleven owner can't use it, it's too complex
 2. **AI explains itself**: Every match score shows WHY it matched

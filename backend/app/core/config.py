@@ -25,7 +25,15 @@ class Settings(BaseSettings):
     # Rate limiting
     sam_requests_per_second: int = 10
     claude_max_tokens_per_analysis: int = 1024
-    
+
+    # Email alerts (SendGrid)
+    sendgrid_api_key: str = ""
+    alert_email_to: str = ""
+
+    # Scout agent
+    scout_interval_hours: int = 6
+    scout_score_threshold: float = 40.0
+
     class Config:
         env_file = ".env"
 

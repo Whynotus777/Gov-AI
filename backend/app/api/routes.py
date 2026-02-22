@@ -17,6 +17,7 @@ from app.services.analyzer import OpportunityAnalyzer
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 # In-memory store for V1 (Supabase in V2)
 _profiles: dict[str, CompanyProfile] = {}
 _clusters: dict[str, CapabilityCluster] = {}
@@ -317,4 +318,107 @@ async def get_stats():
         },
         "by_complexity_tier": tier_counts,
         "by_cluster": cluster_match_counts,
+    }
+
+
+# --- Scout Agent ---
+
+@router.post("/scout/run")
+async def run_scout(profile_id: Optional[str] = None):
+    """
+    Manually trigger a Scout agent run.
+
+    Fetches opportunities posted since the last run, scores them against all
+    saved capability clusters, deduplicates, and sends an email digest if
+    new high-scoring opportunities are found.
+
+    Returns a summary of the run including new opportunities found.
+    """
+    from app.agents.scout import ScoutAgent
+    from app.services.email_alerts import send_opportunity_digest
+
+    clusters = list(_clusters.values())
+    profile = _profiles.get(profile_id) if profile_id else (
+        list(_profiles.values())[0] if _profiles else None
+    )
+
+    agent = ScoutAgent()
+    result = await agent.run(
+        clusters=clusters,
+        agency_preferences=profile.agency_preferences if profile else [],
+        geographic_preferences=profile.geographic_preferences if profile else [],
+    )
+
+    new_opps = result["new_opportunities"]
+    alerts_sent = 0
+    if new_opps:
+        sent = await send_opportunity_digest(new_opps, result["run_at"])
+        if sent:
+            alerts_sent = 1
+
+    result["alerts_sent"] = alerts_sent
+
+    # Return a JSON-serializable summary (exclude full opportunity objects by default)
+    return {
+        "run_at": result["run_at"],
+        "posted_from": result["posted_from"],
+        "total_fetched": result["total_fetched"],
+        "total_scored": result["total_scored"],
+        "new_above_threshold": len(new_opps),
+        "alerts_sent": alerts_sent,
+        "top_matches": [
+            {
+                "notice_id": s.opportunity.notice_id,
+                "title": s.opportunity.title,
+                "score": s.match_score.overall_score,
+                "tier": s.match_tier,
+                "cluster": s.best_cluster_name,
+                "source": s.opportunity.source,
+                "link": s.opportunity.link,
+            }
+            for s in new_opps[:10]
+        ],
+    }
+
+
+@router.get("/scout/status")
+async def scout_status():
+    """
+    Get Scout agent status: last run time, next run time, and cumulative stats.
+    """
+    from app.agents.scout import ScoutAgent
+    from app.agents.scheduler import get_scheduler, get_last_result
+
+    state = ScoutAgent.get_state()
+    scheduler = get_scheduler()
+
+    next_run = None
+    if scheduler and scheduler.running:
+        job = scheduler.get_job("scout")
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+
+    runs = state.get("runs", [])
+    total_new = sum(r.get("new_count", 0) for r in runs)
+    total_fetched = sum(r.get("total_fetched", 0) for r in runs)
+
+    last_result = get_last_result()
+
+    return {
+        "last_run_at": state.get("last_run_at"),
+        "next_run_at": next_run,
+        "total_runs": len(runs),
+        "total_fetched_all_runs": total_fetched,
+        "total_new_all_runs": total_new,
+        "total_tracked_notice_ids": len(state.get("seen_notice_ids", [])),
+        "last_run_summary": (
+            {
+                "run_at": last_result["run_at"],
+                "total_fetched": last_result["total_fetched"],
+                "new_above_threshold": len(last_result["new_opportunities"]),
+                "alerts_sent": last_result["alerts_sent"],
+            }
+            if last_result else None
+        ),
+        "scheduler_running": scheduler.running if scheduler else False,
     }

@@ -42,3 +42,6 @@ out/
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+
+# Scout agent runtime state (persisted notice IDs — not source code)
+backend/data/
