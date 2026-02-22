@@ -21,7 +21,7 @@ from typing import Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from app.models.schemas import Opportunity, SearchFilters
+from app.models.schemas import Opportunity, SearchFilters, ComplexityTier, CompetitionLevel
 
 logger = logging.getLogger(__name__)
 
@@ -222,10 +222,15 @@ class SubNetClient:
                 description=description[:5000],
                 place_of_performance=pop_state,
                 point_of_contact=poc,
+                estimated_value=None,
                 award_amount=None,
                 link=full_link,
                 active=True,
                 source="subnet",
+                # SubNet opportunities are subcontracts — typically simplified
+                # acquisition range. No set-aside data is available from SubNet.
+                complexity_tier=ComplexityTier.SIMPLIFIED,
+                estimated_competition=CompetitionLevel.OPEN,
             )
 
         except Exception as e:
