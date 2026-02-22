@@ -5,7 +5,7 @@ configured or unavailable), they silently no-op so the rest of the app
 continues in in-memory mode without any special-casing at the call site.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import delete, select
@@ -202,6 +202,169 @@ async def get_all_clusters_from_db(
         return clusters
     except Exception as e:
         logger.error(f"DB get_all_clusters failed: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Historical awards (FPDS via USASpending)
+# ---------------------------------------------------------------------------
+
+async def upsert_historical_awards(
+    session: Optional[AsyncSession],
+    awards: list[dict],
+) -> None:
+    if session is None or not awards:
+        return
+    try:
+        from sqlalchemy.dialects.postgresql import insert
+        from app.models.db_models import HistoricalAwardRow
+        now = datetime.utcnow()
+        rows = [
+            {
+                "id": a["id"],
+                "award_id": a.get("award_id", ""),
+                "recipient_name": a.get("recipient_name", ""),
+                "award_amount": a.get("award_amount", 0.0),
+                "naics_code": a.get("naics_code", ""),
+                "awarding_agency": a.get("awarding_agency", ""),
+                "place_of_performance_state": a.get("place_of_performance_state"),
+                "period_start": a.get("period_start"),
+                "period_end": a.get("period_end"),
+                "fetched_at": now,
+            }
+            for a in awards if a.get("id")
+        ]
+        if not rows:
+            return
+        stmt = insert(HistoricalAwardRow).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "award_amount": stmt.excluded.award_amount,
+                "awarding_agency": stmt.excluded.awarding_agency,
+                "fetched_at": stmt.excluded.fetched_at,
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()
+        logger.debug(f"DB: upserted {len(rows)} historical awards")
+    except Exception as e:
+        logger.error(f"DB upsert_historical_awards failed: {e}")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+
+async def get_historical_awards(
+    session: Optional[AsyncSession],
+    naics_code: str,
+    agency: Optional[str] = None,
+    max_age_hours: int = 24,
+) -> list[dict]:
+    """Return cached award records, or [] if expired / not found."""
+    if session is None:
+        return []
+    try:
+        from app.models.db_models import HistoricalAwardRow
+        from sqlalchemy import and_
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        conditions = [
+            HistoricalAwardRow.naics_code == naics_code,
+            HistoricalAwardRow.fetched_at >= cutoff,
+        ]
+        result = await session.execute(
+            select(HistoricalAwardRow).where(and_(*conditions)).limit(100)
+        )
+        rows = result.scalars().all()
+        if agency:
+            ag_lower = agency.lower()
+            rows = [r for r in rows if ag_lower in (r.awarding_agency or "").lower()]
+        return [
+            {
+                "id": r.id,
+                "award_id": r.award_id,
+                "recipient_name": r.recipient_name,
+                "award_amount": r.award_amount,
+                "naics_code": r.naics_code,
+                "awarding_agency": r.awarding_agency,
+                "period_start": r.period_start,
+                "period_end": r.period_end,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"DB get_historical_awards failed: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Spending trends (USASpending)
+# ---------------------------------------------------------------------------
+
+async def upsert_spending_trends(
+    session: Optional[AsyncSession],
+    trends: list[dict],
+) -> None:
+    if session is None or not trends:
+        return
+    try:
+        from sqlalchemy.dialects.postgresql import insert
+        from app.models.db_models import SpendingTrendRow
+        now = datetime.utcnow()
+        rows = [
+            {
+                "naics_code": t["naics_code"],
+                "fiscal_year": t["fiscal_year"],
+                "total_obligated": t.get("total_obligated", 0.0),
+                "award_count": t.get("award_count", 0),
+                "top_agency": t.get("top_agency"),
+                "fetched_at": now,
+            }
+            for t in trends
+        ]
+        stmt = insert(SpendingTrendRow).values(rows)
+        stmt = stmt.on_conflict_do_nothing()
+        await session.execute(stmt)
+        await session.commit()
+        logger.debug(f"DB: upserted {len(rows)} spending trend rows")
+    except Exception as e:
+        logger.error(f"DB upsert_spending_trends failed: {e}")
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+
+async def get_spending_trends(
+    session: Optional[AsyncSession],
+    naics_code: str,
+    max_age_hours: int = 24,
+) -> list[dict]:
+    if session is None:
+        return []
+    try:
+        from app.models.db_models import SpendingTrendRow
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        result = await session.execute(
+            select(SpendingTrendRow).where(
+                SpendingTrendRow.naics_code == naics_code,
+                SpendingTrendRow.fetched_at >= cutoff,
+            ).order_by(SpendingTrendRow.fiscal_year.desc())
+        )
+        rows = result.scalars().all()
+        return [
+            {
+                "naics_code": r.naics_code,
+                "fiscal_year": r.fiscal_year,
+                "total_obligated": r.total_obligated,
+                "award_count": r.award_count,
+                "top_agency": r.top_agency,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"DB get_spending_trends failed: {e}")
         return []
 
 

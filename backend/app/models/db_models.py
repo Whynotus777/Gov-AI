@@ -66,6 +66,38 @@ class ScoutRunRow(Base):
     duration_seconds = Column(Float, default=0.0)
 
 
+class HistoricalAwardRow(Base):
+    """
+    Federal contract award records sourced from USASpending.gov (which aggregates FPDS data).
+    Used for competitive intelligence: who won contracts in a given NAICS/agency.
+    """
+    __tablename__ = "historical_awards"
+
+    id = Column(String, primary_key=True)           # USASpending internal_id as string
+    award_id = Column(String)                       # PIID / contract number
+    recipient_name = Column(String)
+    award_amount = Column(Float)
+    naics_code = Column(String)
+    awarding_agency = Column(String)
+    place_of_performance_state = Column(String)
+    period_start = Column(String)
+    period_end = Column(String)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SpendingTrendRow(Base):
+    """Aggregate federal spending by NAICS code and fiscal year (USASpending.gov)."""
+    __tablename__ = "spending_trends"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    naics_code = Column(String, nullable=False)
+    fiscal_year = Column(Integer, nullable=False)
+    total_obligated = Column(Float, default=0.0)
+    award_count = Column(Integer, default=0)
+    top_agency = Column(String)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class SemanticScoreRow(Base):
     __tablename__ = "semantic_scores"
 

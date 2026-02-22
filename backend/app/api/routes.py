@@ -538,6 +538,40 @@ async def start_backfill(
     }
 
 
+@router.get("/spending/{naics_code}")
+async def get_spending_trends(naics_code: str):
+    """
+    Federal spending trends for a NAICS code across the last 3 fiscal years.
+
+    Shows total obligated dollars and top awarding agencies per year.
+    Useful for market-sizing: how big is the federal market in your NAICS?
+    Data sourced from USASpending.gov. Results cached 24 hours.
+    """
+    from app.services.usaspending_client import USASpendingClient
+    client = USASpendingClient()
+    return await client.get_spending(naics_code)
+
+
+@router.get("/intel/{naics_code}")
+async def get_competitive_intel(
+    naics_code: str,
+    agency: Optional[str] = Query(
+        default=None,
+        description="Filter by awarding agency name (partial match). E.g. 'Department of Defense'",
+    ),
+    years: int = Query(default=3, ge=1, le=5, description="Years of history to pull"),
+):
+    """
+    Competitive intelligence for a NAICS code: who won contracts, how much, which agencies.
+
+    Data sourced from USASpending.gov (which aggregates FPDS award records).
+    Results cached 24 hours. Returns up to 50 award records sorted by amount descending.
+    """
+    from app.services.fpds_client import FPDSClient
+    client = FPDSClient()
+    return await client.get_intel(naics_code=naics_code, agency=agency, years=years)
+
+
 @router.get("/scout/backfill/status")
 async def backfill_status():
     """
