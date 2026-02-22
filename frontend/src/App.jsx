@@ -353,6 +353,16 @@ function FilterBar({ clusters, filters, setFilters, onSearch, loading }) {
       <div className="flex flex-wrap gap-4 items-center">
         <div className="flex gap-1.5 items-center">
           <span className="text-xs text-slate-500 font-medium uppercase tracking-wide mr-1">Tier:</span>
+          <button
+            onClick={() => setFilters(f => ({ ...f, tiers: [] }))}
+            className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+              filters.tiers.length === 0
+                ? "bg-blue-600 text-white border-blue-500"
+                : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600"
+            }`}
+          >
+            All
+          </button>
           {TIERS.map(t => (
             <button
               key={t}
@@ -370,6 +380,16 @@ function FilterBar({ clusters, filters, setFilters, onSearch, loading }) {
         <div className="w-px h-4 bg-slate-800" />
         <div className="flex gap-1.5 items-center">
           <span className="text-xs text-slate-500 font-medium uppercase tracking-wide mr-1">Competition:</span>
+          <button
+            onClick={() => setFilters(f => ({ ...f, competition: [] }))}
+            className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+              filters.competition.length === 0
+                ? "bg-blue-600 text-white border-blue-500"
+                : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600"
+            }`}
+          >
+            All
+          </button>
           {COMPETITION.map(c => (
             <button
               key={c}
