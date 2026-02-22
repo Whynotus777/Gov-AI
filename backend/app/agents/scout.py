@@ -19,6 +19,7 @@ from app.models.schemas import (
 from app.services.sam_api import SAMGovClient
 from app.services.subnet_client import SubNetClient
 from app.services.matcher import MatchingEngine
+from app.services.state_scrapers.aggregator import fetch_all_state_opportunities
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +106,13 @@ class ScoutAgent:
             limit=100,
         )
 
-        # Fetch SAM.gov + SubNet in parallel
+        # Fetch SAM.gov + SubNet + state portals in parallel
         sam_task = self.sam_client.search_opportunities(filters)
         subnet_task = self.subnet_client.search_opportunities(filters)
+        state_task = fetch_all_state_opportunities()
 
-        sam_results, subnet_results = await asyncio.gather(
-            sam_task, subnet_task, return_exceptions=True
+        sam_results, subnet_results, state_results = await asyncio.gather(
+            sam_task, subnet_task, state_task, return_exceptions=True
         )
 
         if isinstance(sam_results, Exception):
@@ -119,11 +121,15 @@ class ScoutAgent:
         if isinstance(subnet_results, Exception):
             logger.warning(f"Scout: SubNet fetch failed (continuing): {subnet_results}")
             subnet_results = []
+        if isinstance(state_results, Exception):
+            logger.warning(f"Scout: state scrapers failed (continuing): {state_results}")
+            state_results = []
 
-        all_opportunities = list(sam_results) + list(subnet_results)
+        all_opportunities = list(sam_results) + list(subnet_results) + list(state_results)
         total_fetched = len(all_opportunities)
         logger.info(
-            f"Scout: fetched {len(sam_results)} SAM + {len(subnet_results)} SubNet"
+            f"Scout: fetched {len(sam_results)} SAM + {len(subnet_results)} SubNet "
+            f"+ {len(state_results)} state"
         )
 
         if not all_opportunities:

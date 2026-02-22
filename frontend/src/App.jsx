@@ -243,12 +243,13 @@ function StatsRow({ opps, clusters, isLive }) {
     const low = opps.filter(o => ["low", "unscored"].includes(o.match_tier)).length;
     const samCount = opps.filter(o => o.opportunity.source === "sam.gov").length;
     const subnetCount = opps.filter(o => o.opportunity.source === "subnet").length;
+    const stateCount = opps.filter(o => ["njstart","eva_virginia","emaryland","dc_ocp"].includes(o.opportunity.source)).length;
     const byCluster = clusters.map((c, i) => ({
       name: c.name,
       count: opps.filter(o => o.best_cluster_id === c.id).length,
       color: i,
     })).filter(x => x.count > 0);
-    return { total: opps.length, high, medium, low, samCount, subnetCount, byCluster };
+    return { total: opps.length, high, medium, low, samCount, subnetCount, stateCount, byCluster };
   }, [opps, clusters]);
 
   return (
@@ -265,6 +266,12 @@ function StatsRow({ opps, clusters, isLive }) {
           <span className="text-xs text-slate-500">
             <span className="text-orange-400 font-medium">{stats.subnetCount}</span> SubNet
           </span>
+          {stats.stateCount > 0 && <>
+            <span className="text-slate-700">·</span>
+            <span className="text-xs text-slate-500">
+              <span className="text-green-400 font-medium">{stats.stateCount}</span> State
+            </span>
+          </>}
         </div>
       </div>
       {/* Tier breakdown */}
@@ -405,7 +412,30 @@ function FilterBar({ clusters, filters, setFilters, onSearch, loading }) {
           ))}
         </div>
       </div>
-      {/* Row 3: Keyword search */}
+      {/* Row 3: Source filter */}
+      <div className="flex flex-wrap gap-1.5 items-center">
+        <span className="text-xs text-slate-500 font-medium uppercase tracking-wide mr-1">Source:</span>
+        <button
+          onClick={() => setFilters(f => ({ ...f, sources: [] }))}
+          className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all ${
+            filters.sources.length === 0
+              ? "bg-blue-600 text-white border-blue-500"
+              : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-600"
+          }`}
+        >All</button>
+        {Object.entries(SOURCE_META).map(([key, { label, cls }]) => (
+          <button
+            key={key}
+            onClick={() => setFilters(f => ({ ...f, sources: toggleArr(f.sources, key) }))}
+            className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+              filters.sources.includes(key)
+                ? cls + " ring-1 ring-inset ring-current/40"
+                : "bg-slate-800 text-slate-500 hover:text-slate-300"
+            }`}
+          >{label}</button>
+        ))}
+      </div>
+      {/* Row 4: Keyword search */}
       <div className="flex gap-2">
         <input
           type="text"
@@ -446,10 +476,18 @@ function DeadlineChip({ dateStr }) {
   );
 }
 
+const SOURCE_META = {
+  "sam.gov":      { label: "SAM.gov",    cls: "bg-sky-500/15 text-sky-400" },
+  "subnet":       { label: "SubNet",     cls: "bg-orange-500/15 text-orange-400" },
+  "njstart":      { label: "NJ START",   cls: "bg-green-500/15 text-green-400" },
+  "eva_virginia": { label: "VA eVA",     cls: "bg-blue-500/15 text-blue-400" },
+  "emaryland":    { label: "eMaryland",  cls: "bg-purple-500/15 text-purple-400" },
+  "dc_ocp":       { label: "DC OCP",     cls: "bg-teal-500/15 text-teal-400" },
+};
+
 function SourceTag({ source }) {
-  return source === "subnet"
-    ? <Pill className="bg-orange-500/15 text-orange-400">SubNet</Pill>
-    : <Pill className="bg-sky-500/15 text-sky-400">SAM.gov</Pill>;
+  const meta = SOURCE_META[source] || { label: source, cls: "bg-slate-700 text-slate-400" };
+  return <Pill className={meta.cls}>{meta.label}</Pill>;
 }
 
 function OpportunityCard({ item, isSelected, onClick, clusterIndex }) {
@@ -572,7 +610,7 @@ function DetailPanel({ item, onClose, clusterIndex }) {
     { label: "Deadline", value: opp.response_deadline ? `${fmtDate(opp.response_deadline)} (${daysUntil(opp.response_deadline)}d remaining)` : null },
     { label: "Location", value: opp.place_of_performance },
     { label: "Est. Value", value: opp.estimated_value ? fmtValue(opp.estimated_value) : null },
-    { label: "Source", value: opp.source === "subnet" ? "SBA SubNet (subcontract)" : "SAM.gov (prime)" },
+    { label: "Source", value: SOURCE_META[opp.source]?.label || opp.source },
   ].filter(r => r.value);
 
   return (
@@ -957,6 +995,7 @@ export default function App() {
     clusterIds: [],
     tiers: [],
     competition: [],
+    sources: [],
     keyword: "",
   });
 
@@ -1023,6 +1062,9 @@ export default function App() {
     }
     if (filters.competition.length > 0) {
       result = result.filter(o => filters.competition.includes(o.opportunity.estimated_competition));
+    }
+    if (filters.sources.length > 0) {
+      result = result.filter(o => filters.sources.includes(o.opportunity.source));
     }
     if (filters.keyword) {
       const kw = filters.keyword.toLowerCase();
