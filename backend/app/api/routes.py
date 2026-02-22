@@ -1,4 +1,5 @@
 """API routes for GovContract AI."""
+import asyncio
 import logging
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
@@ -7,6 +8,7 @@ from app.models.schemas import (
     CompanyProfile, SearchFilters, ScoredOpportunity, OpportunityDetail
 )
 from app.services.sam_api import SAMGovClient
+from app.services.subnet_client import SubNetClient
 from app.services.matcher import MatchingEngine
 from app.services.analyzer import OpportunityAnalyzer
 
@@ -18,6 +20,7 @@ _profiles: dict[str, CompanyProfile] = {}
 _cached_opportunities: list[ScoredOpportunity] = []
 
 sam_client = SAMGovClient()
+subnet_client = SubNetClient()
 matcher = MatchingEngine()
 analyzer = OpportunityAnalyzer()
 
@@ -56,17 +59,42 @@ async def search_opportunities(
     filters: SearchFilters,
     profile_id: Optional[str] = None,
     enrich: bool = Query(default=False, description="Enable AI semantic scoring (slower, costs API credits)"),
+    include_subnet: bool = Query(default=True, description="Include SBA SubNet subcontracting opportunities"),
 ):
     """
-    Search SAM.gov for opportunities and optionally score against a profile.
-    
-    Set enrich=true to add Claude semantic scoring (costs ~$0.001 per opportunity).
+    Search SAM.gov (and optionally SBA SubNet) for opportunities, scored against a profile.
+
+    - SAM.gov: federal prime contracts (tagged source='sam.gov')
+    - SubNet: SBA subcontracting network (tagged source='subnet'), fetched in parallel
+    - Set enrich=true to add Claude semantic scoring (~$0.001/opportunity)
+    - Set include_subnet=false to skip SubNet and return only SAM.gov results
     """
-    # Fetch from SAM.gov
+    # Fetch SAM.gov and SubNet in parallel
+    sam_task = sam_client.search_opportunities(filters)
+    subnet_task = (
+        subnet_client.search_opportunities(filters)
+        if include_subnet
+        else asyncio.sleep(0, result=[])
+    )
+
     try:
-        opportunities = await sam_client.search_opportunities(filters)
+        sam_results, subnet_results = await asyncio.gather(
+            sam_task, subnet_task, return_exceptions=True
+        )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"SAM.gov API error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Data source error: {str(e)}")
+
+    # Handle partial failures gracefully — never let SubNet take down SAM.gov results
+    if isinstance(sam_results, Exception):
+        raise HTTPException(status_code=502, detail=f"SAM.gov API error: {sam_results}")
+    if isinstance(subnet_results, Exception):
+        logger.warning(f"SubNet fetch failed (continuing with SAM.gov only): {subnet_results}")
+        subnet_results = []
+
+    opportunities = list(sam_results) + list(subnet_results)
+    logger.info(
+        f"Fetched {len(sam_results)} SAM.gov + {len(subnet_results)} SubNet opportunities"
+    )
     
     if not opportunities:
         return []
@@ -157,4 +185,8 @@ async def get_stats():
         "cached_opportunities": len(_cached_opportunities),
         "high_matches": sum(1 for s in _cached_opportunities if s.match_tier == "high"),
         "medium_matches": sum(1 for s in _cached_opportunities if s.match_tier == "medium"),
+        "by_source": {
+            "sam.gov": sum(1 for s in _cached_opportunities if s.opportunity.source == "sam.gov"),
+            "subnet": sum(1 for s in _cached_opportunities if s.opportunity.source == "subnet"),
+        },
     }

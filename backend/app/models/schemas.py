@@ -43,7 +43,7 @@ class CompanyProfile(BaseModel):
 
 
 class Opportunity(BaseModel):
-    """A government contract opportunity from SAM.gov."""
+    """A government contract opportunity from SAM.gov or SBA SubNet."""
     notice_id: str
     title: str
     solicitation_number: Optional[str] = None
@@ -62,6 +62,7 @@ class Opportunity(BaseModel):
     award_amount: Optional[float] = None
     link: Optional[str] = None
     active: bool = True
+    source: str = "sam.gov"  # "sam.gov" | "subnet"
 
 
 class MatchScore(BaseModel):

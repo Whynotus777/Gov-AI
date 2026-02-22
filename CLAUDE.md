@@ -12,12 +12,15 @@ small businesses navigating federal/state procurement.
 - **Frontend**: React (single HTML artifact for V1, Next.js for V2)
 - **Database**: Supabase (PostgreSQL) — free tier
 - **AI**: Claude API (Sonnet for scoring, Haiku for classification)
-- **Data Sources**: SAM.gov API (primary), FPDS (future), state portals (future)
+- **Data Sources**: SAM.gov API (primary), SBA SubNet scraper (V1), FPDS (future), state portals (future)
 - **Deployment**: Vercel (frontend) + Railway/Render (backend) — both free tier
 
 ### Core Data Flow
 ```
-SAM.gov API → Opportunity Ingestion → Normalization → 
+SAM.gov API   ─┐
+               ├→ Opportunity Ingestion → Normalization →
+SBA SubNet    ─┘   (parallel fetch, deduped by notice_id)
+
 Company Profile Matching (NAICS + Claude semantic scoring) →
 Ranked Dashboard with AI Analysis → Email Alerts
 ```
@@ -25,6 +28,7 @@ Ranked Dashboard with AI Analysis → Email Alerts
 ### Key Files
 - `backend/app/main.py` — FastAPI app entry point
 - `backend/app/services/sam_api.py` — SAM.gov API integration
+- `backend/app/services/subnet_client.py` — SBA SubNet scraper
 - `backend/app/services/matcher.py` — Opportunity-to-company matching engine
 - `backend/app/services/analyzer.py` — Claude-powered opportunity analysis
 - `backend/app/models/schemas.py` — Pydantic models for all data structures
@@ -32,12 +36,26 @@ Ranked Dashboard with AI Analysis → Email Alerts
 - `frontend/src/App.jsx` — Main React dashboard (single-file artifact for V1)
 
 ### SAM.gov API Details
-- Base URL: `https://api.sam.gov/opportunities/v2/search`
-- Auth: API key (free registration at https://open.gsa.gov/api/get-opportunities-public-api/)
+- Base URL: `https://api.sam.gov/prod/opportunities/v2/search` ← must include `/prod/`
+- Auth: SAM.gov account API key (UUID format: `SAM-xxxx-...`). Register at sam.gov → account → API
 - Rate limit: 10 requests/sec
+- `ncode` param does NOT accept comma-separated NAICS codes — run parallel requests per code
 - Returns: solicitations, presolicitations, award notices, etc.
-- Key fields: title, solicitationNumber, department, subtier, naicsCode, setAside, 
+- Key fields: title, solicitationNumber, department, subtier, naicsCode, setAside,
   responseDeadline, description, pointOfContact
+- `Opportunity.source = "sam.gov"`
+
+### SBA SubNet Details
+- URL: `https://www.sba.gov/federal-contracting/contracting-guide/prime-subcontracting/subcontracting-opportunities`
+- No public API — HTML scraper using BeautifulSoup
+- Table class: `usa-table cols-6`
+- Columns: [title+prime+description | closing date | start date | state | NAICS | contact]
+- Title cell: `span.subnet_title > a` (href = `/opportunity/[slug]`) + `span.subnet_business_name`
+- Filters: `?state=All&keyword=...&page=N` (no NAICS filter — handled by MatchingEngine)
+- Polite crawl: 0.5s delay between pages, max_pages=3 by default
+- `department` field stores the prime contractor name ("Posted by: <prime>")
+- `Opportunity.source = "subnet"`
+- Subcontracting opportunities only (large primes posting for small business subs)
 
 ### Company Profile Schema
 A user creates a profile with:

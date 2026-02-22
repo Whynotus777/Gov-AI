@@ -1,4 +1,5 @@
 """SAM.gov API integration for fetching government contract opportunities."""
+import asyncio
 import httpx
 import logging
 from typing import Optional
@@ -49,8 +50,6 @@ class SAMGovClient:
         if filters:
             if filters.keywords:
                 params["title"] = filters.keywords
-            if filters.naics_codes:
-                params["ncode"] = ",".join(filters.naics_codes)
             if filters.set_aside:
                 params["typeOfSetAside"] = filters.set_aside
             if filters.posted_from:
@@ -61,28 +60,48 @@ class SAMGovClient:
                 params["deptname"] = filters.department
             if filters.opportunity_types:
                 params["ptype"] = ",".join(filters.opportunity_types)
-        
+
+        # SAM.gov ncode param does not accept comma-separated values.
+        # When multiple NAICS codes are requested, run one query per code in
+        # parallel and deduplicate by notice_id.
+        naics_codes = filters.naics_codes if filters else []
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(self.base_url, params=params)
-                response.raise_for_status()
-                data = response.json()
-            
-            opportunities = []
-            for item in data.get("opportunitiesData", []):
-                opp = self._parse_opportunity(item)
-                if opp:
-                    opportunities.append(opp)
-            
+                if len(naics_codes) <= 1:
+                    if naics_codes:
+                        params["ncode"] = naics_codes[0]
+                    raw_lists = [await self._fetch_page(client, params)]
+                else:
+                    tasks = []
+                    for code in naics_codes:
+                        p = {**params, "ncode": code}
+                        tasks.append(self._fetch_page(client, p))
+                    raw_lists = await asyncio.gather(*tasks)
+
+            seen: set[str] = set()
+            opportunities: list[Opportunity] = []
+            for raw_items in raw_lists:
+                for item in raw_items:
+                    opp = self._parse_opportunity(item)
+                    if opp and opp.notice_id not in seen:
+                        seen.add(opp.notice_id)
+                        opportunities.append(opp)
+
             logger.info(f"Fetched {len(opportunities)} opportunities from SAM.gov")
             return opportunities
-            
+
         except httpx.HTTPStatusError as e:
             logger.error(f"SAM.gov API error: {e.response.status_code} - {e.response.text}")
             raise
         except httpx.RequestError as e:
             logger.error(f"SAM.gov request failed: {e}")
             raise
+
+    async def _fetch_page(self, client: httpx.AsyncClient, params: dict) -> list:
+        """Execute one search request and return the raw opportunitiesData list."""
+        response = await client.get(self.base_url, params=params)
+        response.raise_for_status()
+        return response.json().get("opportunitiesData", [])
     
     async def get_opportunity_detail(self, notice_id: str) -> Optional[Opportunity]:
         """Fetch detailed info for a specific opportunity."""

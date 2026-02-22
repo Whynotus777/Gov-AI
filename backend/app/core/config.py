@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     
     # SAM.gov API
     sam_gov_api_key: str = ""
-    sam_gov_base_url: str = "https://api.sam.gov/opportunities/v2/search"
+    sam_gov_base_url: str = "https://api.sam.gov/prod/opportunities/v2/search"
     
     # Anthropic
     anthropic_api_key: str = ""

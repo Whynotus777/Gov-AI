@@ -132,12 +132,19 @@ class MatchingEngine:
         """Score agency preference (0-10 points)."""
         if not profile.agency_preferences or not opp.department:
             return 0.0
-        
+
         opp_dept = opp.department.lower()
         for pref in profile.agency_preferences:
-            if pref.lower() in opp_dept:
+            pref_lower = pref.lower()
+            # Direct substring match in either direction
+            if pref_lower in opp_dept or opp_dept in pref_lower:
                 return 10.0
-        
+            # Keyword overlap: SAM.gov uses abbreviations like "DEPT OF DEFENSE"
+            # vs profile value "Department of Defense". Match on significant words (>3 chars).
+            key_words = [w for w in pref_lower.split() if len(w) > 3]
+            if key_words and any(w in opp_dept for w in key_words):
+                return 10.0
+
         return 0.0
     
     def _score_geography(self, opp: Opportunity, profile: CompanyProfile) -> float:
